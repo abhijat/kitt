@@ -1,11 +1,14 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
 use nix::sys::{ptrace, signal, wait};
 use nix::unistd;
 use nix::unistd::{ForkResult, Pid};
+use std::cmp::PartialEq;
 use std::ffi::CString;
 use std::fmt::{Display, Formatter};
+use std::io::Write;
+use std::io::{Read, pipe};
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum State {
@@ -13,6 +16,7 @@ enum State {
     Running,
     Exited,
     Terminated,
+    FailedToLaunch,
 }
 
 enum StopCause {
@@ -60,19 +64,25 @@ impl Display for StopReason {
             State::Stopped => write!(f, "stopped with cause {}", self.stop_cause),
             State::Exited => write!(f, "terminated with signal {}", self.stop_cause),
             State::Terminated => write!(f, "stopped with signal {}", self.stop_cause),
-            State::Running => unreachable!(),
+            State::Running | State::FailedToLaunch => unreachable!(),
         }
     }
+}
+
+#[derive(Eq, PartialEq)]
+enum TerminateOnEnd {
+    YES,
+    NO,
 }
 
 pub struct Process {
     pid: Pid,
     state: State,
-    terminate_on_end: bool,
+    terminate_on_end: TerminateOnEnd,
 }
 
 impl Process {
-    fn new(pid: Pid, terminate_on_end: bool) -> Self {
+    fn new(pid: Pid, terminate_on_end: TerminateOnEnd) -> Self {
         Self {
             pid,
             state: State::Stopped,
@@ -81,20 +91,35 @@ impl Process {
     }
 
     pub fn launch(path: &str) -> Result<Self> {
+        // O_CLOEXEC is set by `pipe_inner`
+        let (mut reader, mut writer) = pipe()?;
         match unsafe { unistd::fork()? } {
             ForkResult::Parent { child } => {
-                let mut proc = Process::new(child, true);
+                let mut proc = Process::new(child, TerminateOnEnd::YES);
+
+                drop(writer);
+                let mut buf = String::new();
+                let data = reader.read_to_string(&mut buf)?;
+
+                if data != 0 {
+                    proc.state = State::FailedToLaunch;
+                    bail!("child failed to launch: {buf}");
+                }
+
                 proc.wait_on_signal()?;
                 Ok(proc)
             }
             ForkResult::Child => {
+                drop(reader);
                 // In the child process. Exec the program now, but first set the process
                 // as traceable with PTRACE_TRACEME
                 ptrace::traceme()?;
                 let program = CString::new(path)?;
-                unistd::execvp(&program, &[&program])?;
-                // We never reach here because after the above execv succeeds,
-                // this code is replaced with program in the process.
+                let result = unistd::execvp(&program, &[&program]);
+                // If we reach here, it is because execvp failed. The result is guaranteed
+                // to contain an error.
+                let Err(err) = result;
+                write!(writer, "{err}")?;
                 unreachable!()
             }
         }
@@ -107,7 +132,7 @@ impl Process {
 
         // Calls PTRACE_ATTACH
         ptrace::attach(pid)?;
-        let mut proc = Process::new(pid, false);
+        let mut proc = Process::new(pid, TerminateOnEnd::NO);
         proc.wait_on_signal()?;
         Ok(proc)
     }
@@ -137,26 +162,53 @@ impl Drop for Process {
     // detach from the traced process using PTRACE_DETACH, and finally kill the
     // process if configured (via terminate_on_end).
     fn drop(&mut self) {
-        if self.pid.as_raw() != 0 {
-            if self.state == State::Running {
-                // If the tracee is running, before detach we must stop it.
-                signal::kill(self.pid, Signal::SIGSTOP).expect("failed to send sigkill");
-                wait::waitpid(self.pid, None).expect("failed to wait for pid after STOP");
-            }
-
-            if self.state != State::Stopped {
-                // The process is terminated or has exited. We can no longer interact with it now.
-                return;
-            }
-
-            // detach and continue tracee
-            ptrace::detach(self.pid, None).expect("failed to detach from pid");
-            signal::kill(self.pid, Signal::SIGCONT).expect("failed to continue pid");
-
-            if self.terminate_on_end {
-                signal::kill(self.pid, Signal::SIGKILL).expect("failed to kill pid");
-                wait::waitpid(self.pid, None).expect("failed to wait for pid after kill");
-            }
+        if self.pid.as_raw() == 0 || self.state == State::FailedToLaunch {
+            return;
         }
+
+        if self.state == State::Running {
+            // If the tracee is running, before detach we must stop it.
+            signal::kill(self.pid, Signal::SIGSTOP).expect("failed to send sigkill");
+            self.wait_on_signal()
+                .expect("failed while waiting for state change after SIGSTOP");
+        }
+
+        if self.state != State::Stopped {
+            // The process is terminated or has exited. We can no longer interact with it now.
+            return;
+        }
+
+        // detach and continue tracee
+        ptrace::detach(self.pid, None).expect("failed to detach from pid");
+        signal::kill(self.pid, Signal::SIGCONT).expect("failed to continue pid");
+
+        if self.terminate_on_end == TerminateOnEnd::YES {
+            signal::kill(self.pid, Signal::SIGKILL).expect("failed to kill pid");
+            wait::waitpid(self.pid, None).expect("failed to wait for pid after kill");
+        }
+    }
+}
+
+fn process_exists(pid: Pid) -> bool {
+    signal::kill(pid, None).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::process::{Process, process_exists};
+
+    #[test]
+    fn process_exists_when_launched() {
+        let process = Process::launch("yes");
+        assert!(process.is_ok());
+
+        let process = process.unwrap();
+        assert!(process_exists(process.process_id()));
+    }
+
+    #[test]
+    fn failure_when_launching_imaginary_program() {
+        let process = Process::launch("this-program-198533233-never-was");
+        assert!(process.is_err_and(|err| err.to_string().contains("child failed to launch")));
     }
 }

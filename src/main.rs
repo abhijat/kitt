@@ -34,6 +34,12 @@ fn handle_command(process: &mut Process, line: &str) -> Result<()> {
     Ok(())
 }
 
+fn handle_command_and_report_errors(process: &mut Process, command: &str) {
+    if let Err(err) = handle_command(process, command) {
+        println!("{err}");
+    }
+}
+
 const HISTORY_PATH: &str = ".kitt_hist";
 
 fn repl(process: &mut Process) -> Result<()> {
@@ -47,12 +53,12 @@ fn repl(process: &mut Process) -> Result<()> {
                 let history = editor.history();
                 if !history.is_empty() {
                     let last_cmd = &history[history.len() - 1];
-                    handle_command(process, last_cmd)?
+                    handle_command_and_report_errors(process, last_cmd);
                 }
             }
             Ok(line) => {
                 editor.add_history_entry(&line)?;
-                handle_command(process, &line)?;
+                handle_command_and_report_errors(process, &line);
             }
             Err(ReadlineError::Interrupted) => {
                 println!("Ctrl-C");
