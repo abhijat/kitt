@@ -144,6 +144,11 @@ impl Drop for Process {
                 wait::waitpid(self.pid, None).expect("failed to wait for pid after STOP");
             }
 
+            if self.state != State::Stopped {
+                // The process is terminated or has exited. We can no longer interact with it now.
+                return;
+            }
+
             // detach and continue tracee
             ptrace::detach(self.pid, None).expect("failed to detach from pid");
             signal::kill(self.pid, Signal::SIGCONT).expect("failed to continue pid");

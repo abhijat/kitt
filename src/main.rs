@@ -34,9 +34,11 @@ fn handle_command(process: &mut Process, line: &str) -> Result<()> {
     Ok(())
 }
 
+const HISTORY_PATH: &str = ".kitt_hist";
+
 fn repl(process: &mut Process) -> Result<()> {
     let mut editor = DefaultEditor::new()?;
-    let _ = editor.load_history("history.txt");
+    _ = editor.load_history(HISTORY_PATH);
 
     loop {
         let line = editor.readline("kitt> ");
@@ -44,8 +46,7 @@ fn repl(process: &mut Process) -> Result<()> {
             Ok(line) if line == "" => {
                 let history = editor.history();
                 if !history.is_empty() {
-                    let last = history.len() - 1;
-                    let last_cmd = &history[last];
+                    let last_cmd = &history[history.len() - 1];
                     handle_command(process, last_cmd)?
                 }
             }
@@ -67,6 +68,11 @@ fn repl(process: &mut Process) -> Result<()> {
             }
         }
     }
+
+    // TODO save periodically? So if we crash we still have the history
+    _ = editor
+        .save_history(HISTORY_PATH)
+        .map_err(|err| eprintln!("failed to save editor history: {err}"));
     Ok(())
 }
 
