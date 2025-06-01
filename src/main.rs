@@ -1,4 +1,4 @@
-use crate::process::Process;
+use crate::process::{DebugProcess, Process};
 use anyhow::Result;
 use nix::unistd::Pid;
 use rustyline::error::ReadlineError;
@@ -16,7 +16,7 @@ fn attach(args: Vec<String>) -> Result<Process> {
         Ok(process)
     } else {
         let program_path = &args[0];
-        let process = Process::launch(program_path)?;
+        let process = Process::launch(program_path, DebugProcess::YES)?;
         Ok(process)
     }
 }
@@ -28,7 +28,7 @@ fn handle_command(process: &mut Process, line: &str) -> Result<()> {
     if "continue".starts_with(command) {
         process.resume()?;
         let reason = process.wait_on_signal()?;
-        println!("process id {} {}", process.process_id(), reason);
+        println!("process id {} {}", process.pid, reason);
     }
 
     Ok(())

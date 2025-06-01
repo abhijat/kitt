@@ -69,16 +69,38 @@ impl Display for StopReason {
     }
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(PartialEq)]
 enum TerminateOnEnd {
     YES,
     NO,
 }
 
+#[derive(PartialEq, Copy, Clone)]
+pub enum DebugProcess {
+    YES,
+    NO,
+}
+
+#[derive(PartialEq, Debug)]
+enum IsAttached {
+    YES,
+    NO,
+}
+
+impl From<DebugProcess> for IsAttached {
+    fn from(value: DebugProcess) -> Self {
+        match value {
+            DebugProcess::YES => IsAttached::YES,
+            DebugProcess::NO => IsAttached::NO,
+        }
+    }
+}
+
 pub struct Process {
-    pid: Pid,
+    pub(crate) pid: Pid,
     state: ProcessState,
     terminate_on_end: TerminateOnEnd,
+    is_attached: IsAttached,
 }
 
 fn read_from_pipe(mut r: PipeReader) -> Result<String> {
@@ -88,20 +110,21 @@ fn read_from_pipe(mut r: PipeReader) -> Result<String> {
 }
 
 impl Process {
-    fn new(pid: Pid, terminate_on_end: TerminateOnEnd) -> Self {
+    fn new(pid: Pid, terminate_on_end: TerminateOnEnd, is_attached: IsAttached) -> Self {
         Self {
             pid,
             state: ProcessState::Stopped,
             terminate_on_end,
+            is_attached,
         }
     }
 
-    pub fn launch(path: &str) -> Result<Self> {
+    pub fn launch(path: &str, debug_process: DebugProcess) -> Result<Self> {
         // O_CLOEXEC is set by `pipe_inner`
         let (reader, mut writer) = pipe()?;
         match unsafe { unistd::fork()? } {
             ForkResult::Parent { child } => {
-                let mut proc = Process::new(child, TerminateOnEnd::YES);
+                let mut proc = Process::new(child, TerminateOnEnd::YES, debug_process.into());
 
                 drop(writer);
 
@@ -111,14 +134,19 @@ impl Process {
                     bail!("child failed to launch: {msg}");
                 }
 
-                proc.wait_on_signal()?;
+                if debug_process == DebugProcess::YES {
+                    proc.wait_on_signal()?;
+                }
                 Ok(proc)
             }
             ForkResult::Child => {
                 drop(reader);
                 // In the child process. Exec the program now, but first set the process
                 // as traceable with PTRACE_TRACEME
-                ptrace::traceme()?;
+                if debug_process == DebugProcess::YES {
+                    ptrace::traceme()?;
+                }
+
                 let program = CString::new(path)?;
                 let result = unistd::execvp(&program, &[&program]);
                 // If we reach here, it is because execvp failed. The result is guaranteed
@@ -131,13 +159,9 @@ impl Process {
     }
 
     pub fn attach(pid: Pid) -> Result<Self> {
-        if pid.as_raw() == 0 {
-            bail!("Invalid process id: {pid}");
-        }
-
         // Calls PTRACE_ATTACH
         ptrace::attach(pid)?;
-        let mut proc = Process::new(pid, TerminateOnEnd::NO);
+        let mut proc = Process::new(pid, TerminateOnEnd::NO, IsAttached::YES);
         proc.wait_on_signal()?;
         Ok(proc)
     }
@@ -157,10 +181,6 @@ impl Process {
         self.state = stop_reason.process_state;
         Ok(stop_reason)
     }
-
-    pub fn process_id(&self) -> Pid {
-        self.pid
-    }
 }
 
 impl Drop for Process {
@@ -168,25 +188,29 @@ impl Drop for Process {
     // detach from the traced process using PTRACE_DETACH, and finally kill the
     // process if configured (via terminate_on_end).
     fn drop(&mut self) {
-        if self.pid.as_raw() == 0 || self.state == ProcessState::FailedToLaunch {
+        if self.pid.as_raw() == 0 {
             return;
         }
 
-        if self.state == ProcessState::Running {
-            // If the tracee is running, before detach we must stop it.
-            signal::kill(self.pid, Signal::SIGSTOP).expect("failed to send sigkill");
-            self.wait_on_signal()
-                .expect("failed while waiting for state change after SIGSTOP");
-        }
-
-        if self.state != ProcessState::Stopped {
-            // The process is terminated or has exited. We can no longer interact with it now.
+        if self.state == ProcessState::Exited
+            || self.state == ProcessState::Terminated
+            || self.state == ProcessState::FailedToLaunch
+        {
             return;
         }
 
-        // detach and continue tracee
-        ptrace::detach(self.pid, None).expect("failed to detach from pid");
-        signal::kill(self.pid, Signal::SIGCONT).expect("failed to continue pid");
+        if self.is_attached == IsAttached::YES {
+            if self.state == ProcessState::Running {
+                // If the tracee is running, before detach we must stop it.
+                signal::kill(self.pid, Signal::SIGSTOP).expect("failed to send sigkill");
+                self.wait_on_signal()
+                    .expect("failed while waiting for state change after SIGSTOP");
+            }
+
+            // detach and continue tracee
+            ptrace::detach(self.pid, None).expect("failed to detach from pid");
+            signal::kill(self.pid, Signal::SIGCONT).expect("failed to continue pid");
+        }
 
         if self.terminate_on_end == TerminateOnEnd::YES {
             signal::kill(self.pid, Signal::SIGKILL).expect("failed to kill pid");
@@ -195,32 +219,43 @@ impl Drop for Process {
     }
 }
 
-fn process_exists(pid: Pid) -> bool {
-    signal::kill(pid, None).is_ok()
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::process::{process_exists, Process, ProcessState};
+    use crate::process::{DebugProcess, Process, ProcessState};
+    use anyhow::Result;
+    use nix::sys::signal;
+    use nix::unistd::Pid;
+    use std::fs;
+
+    fn process_exists(pid: Pid) -> bool {
+        signal::kill(pid, None).is_ok()
+    }
+
+    fn process_state(pid: Pid) -> Result<char> {
+        let data = fs::read_to_string(format!("/proc/{}/stat", pid.as_raw()))?;
+        let last_paren = data.rfind(')').unwrap();
+        let c = data.chars().nth(last_paren + 2);
+        Ok(c.unwrap())
+    }
 
     #[test]
     fn process_exists_when_launched() {
-        let process = Process::launch("yes");
+        let process = Process::launch("yes", DebugProcess::YES);
         assert!(process.is_ok());
 
         let process = process.unwrap();
-        assert!(process_exists(process.process_id()));
+        assert!(process_exists(process.pid));
     }
 
     #[test]
     fn failure_when_launching_imaginary_program() {
-        let process = Process::launch("this-program-198533233-never-was");
+        let process = Process::launch("this-program-198533233-never-was", DebugProcess::YES);
         assert!(process.is_err_and(|err| err.to_string().contains("child failed to launch")));
     }
 
     #[test]
     fn safe_to_drop_exited_process() {
-        let process = Process::launch("ls");
+        let process = Process::launch("ls", DebugProcess::YES);
         assert!(process.is_ok());
 
         let mut process = process.unwrap();
@@ -232,5 +267,58 @@ mod tests {
 
         assert!(!process_exists(process.pid));
         drop(process);
+    }
+
+    #[test]
+    fn attach_success() {
+        let forever = Process::launch("target/debug/run-forever", DebugProcess::NO);
+        assert!(forever.is_ok());
+
+        let forever = forever.unwrap();
+
+        let attached = Process::attach(forever.pid);
+        assert!(attached.is_ok());
+        assert!(matches!(process_state(attached.unwrap().pid), Ok('t')));
+    }
+
+    #[test]
+    fn attach_to_invalid_pid() {
+        let attached = Process::attach(Pid::from_raw(0));
+        assert!(attached.is_err_and(|err| err.to_string().contains("ESRCH: No such process")));
+    }
+
+    #[test]
+    fn resumed_process_is_in_appropriate_state() {
+        for debugging in [DebugProcess::YES, DebugProcess::NO] {
+            let p = Process::launch("target/debug/run-forever", debugging);
+            assert!(p.is_ok());
+
+            let p = p.unwrap();
+            let mut p = if debugging == DebugProcess::YES {
+                p
+            } else {
+                let p = Process::attach(p.pid);
+                assert!(p.is_ok());
+                p.unwrap()
+            };
+
+            p.resume().unwrap();
+            let status = process_state(p.pid);
+
+            assert!(matches!(status, Ok('R')) || matches!(status, Ok('S')));
+        }
+    }
+
+    #[test]
+    fn finished_program_cannot_resume() {
+        let p = Process::launch("ls", DebugProcess::YES);
+        assert!(p.is_ok());
+        let mut p = p.unwrap();
+        assert!(p.resume().is_ok());
+        assert!(p.wait_on_signal().is_ok());
+        assert!(
+            p.resume()
+                .is_err_and(|err| err.to_string().contains("ESRCH"))
+        );
     }
 }
