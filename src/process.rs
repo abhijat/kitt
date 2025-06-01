@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
 use nix::sys::{ptrace, signal, wait};
@@ -7,11 +7,11 @@ use nix::unistd::{ForkResult, Pid};
 use std::cmp::PartialEq;
 use std::ffi::CString;
 use std::fmt::{Display, Formatter};
-use std::io::Write;
-use std::io::{Read, pipe};
+use std::io::{pipe, Read};
+use std::io::{PipeReader, Write};
 
-#[derive(Copy, Clone, Eq, PartialEq)]
-enum State {
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum ProcessState {
     Stopped,
     Running,
     Exited,
@@ -34,7 +34,7 @@ impl Display for StopCause {
 }
 
 pub struct StopReason {
-    process_state: State,
+    process_state: ProcessState,
     stop_cause: StopCause,
 }
 
@@ -42,15 +42,15 @@ impl StopReason {
     pub fn new(wait_status: WaitStatus) -> Self {
         match wait_status {
             WaitStatus::Exited(_, code) => Self {
-                process_state: State::Exited,
+                process_state: ProcessState::Exited,
                 stop_cause: StopCause::Code(code),
             },
             WaitStatus::Signaled(_, signal, _) => Self {
-                process_state: State::Terminated,
+                process_state: ProcessState::Terminated,
                 stop_cause: StopCause::Signal(signal),
             },
             WaitStatus::Stopped(_, signal) => Self {
-                process_state: State::Stopped,
+                process_state: ProcessState::Stopped,
                 stop_cause: StopCause::Signal(signal),
             },
             unexpected => panic!("unexpected wait status {unexpected:?}"),
@@ -61,10 +61,10 @@ impl StopReason {
 impl Display for StopReason {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.process_state {
-            State::Stopped => write!(f, "stopped with cause {}", self.stop_cause),
-            State::Exited => write!(f, "terminated with signal {}", self.stop_cause),
-            State::Terminated => write!(f, "stopped with signal {}", self.stop_cause),
-            State::Running | State::FailedToLaunch => unreachable!(),
+            ProcessState::Stopped => write!(f, "stopped with cause {}", self.stop_cause),
+            ProcessState::Exited => write!(f, "terminated with signal {}", self.stop_cause),
+            ProcessState::Terminated => write!(f, "stopped with signal {}", self.stop_cause),
+            ProcessState::Running | ProcessState::FailedToLaunch => unreachable!(),
         }
     }
 }
@@ -77,33 +77,38 @@ enum TerminateOnEnd {
 
 pub struct Process {
     pid: Pid,
-    state: State,
+    state: ProcessState,
     terminate_on_end: TerminateOnEnd,
+}
+
+fn read_from_pipe(mut r: PipeReader) -> Result<String> {
+    let mut buf = String::new();
+    r.read_to_string(&mut buf)?;
+    Ok(buf)
 }
 
 impl Process {
     fn new(pid: Pid, terminate_on_end: TerminateOnEnd) -> Self {
         Self {
             pid,
-            state: State::Stopped,
+            state: ProcessState::Stopped,
             terminate_on_end,
         }
     }
 
     pub fn launch(path: &str) -> Result<Self> {
         // O_CLOEXEC is set by `pipe_inner`
-        let (mut reader, mut writer) = pipe()?;
+        let (reader, mut writer) = pipe()?;
         match unsafe { unistd::fork()? } {
             ForkResult::Parent { child } => {
                 let mut proc = Process::new(child, TerminateOnEnd::YES);
 
                 drop(writer);
-                let mut buf = String::new();
-                let data = reader.read_to_string(&mut buf)?;
 
-                if data != 0 {
-                    proc.state = State::FailedToLaunch;
-                    bail!("child failed to launch: {buf}");
+                let msg = read_from_pipe(reader)?;
+                if !msg.is_empty() {
+                    proc.state = ProcessState::FailedToLaunch;
+                    bail!("child failed to launch: {msg}");
                 }
 
                 proc.wait_on_signal()?;
@@ -118,9 +123,9 @@ impl Process {
                 let result = unistd::execvp(&program, &[&program]);
                 // If we reach here, it is because execvp failed. The result is guaranteed
                 // to contain an error.
-                let Err(err) = result;
-                write!(writer, "{err}")?;
-                unreachable!()
+                write!(writer, "{}", result.err().unwrap())?;
+                // No one will receive this error
+                bail!("failed to launch");
             }
         }
     }
@@ -138,8 +143,9 @@ impl Process {
     }
 
     // Resume the traced process with PTRACE_CONT
-    pub fn resume(&self) -> Result<()> {
+    pub fn resume(&mut self) -> Result<()> {
         ptrace::cont(self.pid, None)?;
+        self.state = ProcessState::Running;
         Ok(())
     }
 
@@ -162,18 +168,18 @@ impl Drop for Process {
     // detach from the traced process using PTRACE_DETACH, and finally kill the
     // process if configured (via terminate_on_end).
     fn drop(&mut self) {
-        if self.pid.as_raw() == 0 || self.state == State::FailedToLaunch {
+        if self.pid.as_raw() == 0 || self.state == ProcessState::FailedToLaunch {
             return;
         }
 
-        if self.state == State::Running {
+        if self.state == ProcessState::Running {
             // If the tracee is running, before detach we must stop it.
             signal::kill(self.pid, Signal::SIGSTOP).expect("failed to send sigkill");
             self.wait_on_signal()
                 .expect("failed while waiting for state change after SIGSTOP");
         }
 
-        if self.state != State::Stopped {
+        if self.state != ProcessState::Stopped {
             // The process is terminated or has exited. We can no longer interact with it now.
             return;
         }
@@ -195,7 +201,7 @@ fn process_exists(pid: Pid) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::process::{Process, process_exists};
+    use crate::process::{process_exists, Process, ProcessState};
 
     #[test]
     fn process_exists_when_launched() {
@@ -210,5 +216,21 @@ mod tests {
     fn failure_when_launching_imaginary_program() {
         let process = Process::launch("this-program-198533233-never-was");
         assert!(process.is_err_and(|err| err.to_string().contains("child failed to launch")));
+    }
+
+    #[test]
+    fn safe_to_drop_exited_process() {
+        let process = Process::launch("ls");
+        assert!(process.is_ok());
+
+        let mut process = process.unwrap();
+
+        process.resume().unwrap();
+        let wait_res = process.wait_on_signal().unwrap();
+
+        assert!(matches!(wait_res.process_state, ProcessState::Exited));
+
+        assert!(!process_exists(process.pid));
+        drop(process);
     }
 }
