@@ -8,6 +8,8 @@ use std::env;
 
 mod process;
 mod reginfo;
+mod types;
+mod registers;
 
 fn attach(args: Vec<String>) -> Result<Process> {
     if args.len() == 2 && args[0] == "-p" {
