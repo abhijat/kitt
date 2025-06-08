@@ -1,8 +1,10 @@
+use anyhow::{anyhow, Result};
 use nix::libc::{user, user_fpregs_struct, user_regs_struct};
 use std::ffi::{c_uint, c_ulonglong, c_ushort};
 use std::mem::offset_of;
 use std::sync::LazyLock;
 
+#[derive(Eq, PartialEq)]
 pub enum RegisterId {
     RAX,
     RDX,
@@ -286,12 +288,31 @@ pub struct RegisterInfo {
     pub format: RegisterFormat,
 }
 
+fn lookup_register_info(f: impl Fn(&RegisterInfo) -> bool) -> Result<&'static RegisterInfo> {
+    (&*REGISTER_INFO)
+        .iter()
+        .find(|r| f(r))
+        .ok_or(anyhow!("failed to find register info"))
+}
+
+pub fn lookup_register_info_by_id(id: RegisterId) -> Result<&'static RegisterInfo> {
+    lookup_register_info(|r| r.id == id)
+}
+
+pub fn lookup_register_info_by_name(name: &str) -> Result<&'static RegisterInfo> {
+    lookup_register_info(|r| r.name == name)
+}
+
+pub fn lookup_register_by_dwarf(dwarf_id: i32) -> Result<&'static RegisterInfo> {
+    lookup_register_info(|r| r.id.dwarf_id() == dwarf_id)
+}
+
 const USER_REGS_OFFSET: usize = offset_of!(user, regs);
 const FPR_OFFSET: usize = offset_of!(user, i387);
 const ST_SPACE_OFFSET: usize = offset_of!(user_fpregs_struct, st_space);
 const XMM_SPACE_OFFSET: usize = offset_of!(user_fpregs_struct, xmm_space);
 
-const REGISTER_INFO: LazyLock<[RegisterInfo; 125]> = LazyLock::new(|| {
+static REGISTER_INFO: LazyLock<[RegisterInfo; 125]> = LazyLock::new(|| {
     [
         RegisterInfo {
             id: RegisterId::RAX,
