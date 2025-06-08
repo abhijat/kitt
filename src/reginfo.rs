@@ -4,7 +4,7 @@ use std::ffi::{c_uint, c_ulonglong, c_ushort};
 use std::mem::offset_of;
 use std::sync::LazyLock;
 
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Copy, Clone)]
 pub enum RegisterId {
     RAX,
     RDX,
@@ -265,6 +265,7 @@ impl RegisterId {
     }
 }
 
+#[derive(Copy, Clone)]
 pub enum RegisterKind {
     GeneralPurpose,
     SubGeneralPurpose,
@@ -272,6 +273,7 @@ pub enum RegisterKind {
     Debug,
 }
 
+#[derive(Copy, Clone)]
 pub enum RegisterFormat {
     Uint,
     DoubleFloat,
