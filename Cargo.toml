@@ -6,8 +6,12 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.98"
 nix = { version = "0.30.1", features = ["process", "ptrace", "signal"] }
-rustyline = { version = "15.0.0", features = ["with-file-history"] }
+rustyline = { version = "17.0.1", features = ["with-file-history"] }
 
 [[bin]]
 name = "run-forever"
 path = "src/bin/forever.rs"
+
+[[bin]]
+name = "kitt"
+path = "src/main.rs"
