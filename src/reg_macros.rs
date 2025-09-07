@@ -1,4 +1,3 @@
-#[macro_export]
 macro_rules! gpr64 {
     ($register_id:ident, $register_field:expr, $dwarf_id:literal) => {
         RegisterInfo {
@@ -13,7 +12,6 @@ macro_rules! gpr64 {
     };
 }
 
-#[macro_export]
 macro_rules! gpr32 {
     ($register_id:ident,$parent_field:expr) => {
         RegisterInfo {
@@ -28,7 +26,6 @@ macro_rules! gpr32 {
     };
 }
 
-#[macro_export]
 macro_rules! gpr16 {
     ($register_id:ident,$parent_field:expr) => {
         RegisterInfo {
@@ -43,7 +40,6 @@ macro_rules! gpr16 {
     };
 }
 
-#[macro_export]
 macro_rules! gpr8_hi {
     ($register_id:ident,$parent_field:expr) => {
         RegisterInfo {
@@ -58,7 +54,6 @@ macro_rules! gpr8_hi {
     };
 }
 
-#[macro_export]
 macro_rules! gpr8_lo {
     ($register_id:ident,$parent_field:expr) => {
         RegisterInfo {
@@ -73,7 +68,6 @@ macro_rules! gpr8_lo {
     };
 }
 
-#[macro_export]
 macro_rules! fpr {
     ($register_id:ident, $dwarf_id:literal, $user_name:expr, $size:literal) => {
         RegisterInfo {
@@ -88,7 +82,6 @@ macro_rules! fpr {
     };
 }
 
-#[macro_export]
 macro_rules! fp_st {
     ($register_id:ident, $seq:literal) => {
         RegisterInfo {
@@ -103,7 +96,6 @@ macro_rules! fp_st {
     };
 }
 
-#[macro_export]
 macro_rules! fp_mm {
     ($register_id:ident, $seq:literal) => {
         RegisterInfo {
@@ -118,7 +110,6 @@ macro_rules! fp_mm {
     };
 }
 
-#[macro_export]
 macro_rules! xmm {
     ($register_id:ident, $seq:literal) => {
         RegisterInfo {
@@ -135,7 +126,6 @@ macro_rules! xmm {
     };
 }
 
-#[macro_export]
 macro_rules! debugreg {
     ($register_id:ident, $seq:literal) => {
         RegisterInfo {
@@ -149,3 +139,14 @@ macro_rules! debugreg {
         }
     };
 }
+
+pub(crate) use debugreg;
+pub(crate) use fp_mm;
+pub(crate) use fp_st;
+pub(crate) use fpr;
+pub(crate) use gpr8_hi;
+pub(crate) use gpr8_lo;
+pub(crate) use gpr16;
+pub(crate) use gpr32;
+pub(crate) use gpr64;
+pub(crate) use xmm;

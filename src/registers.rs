@@ -20,7 +20,7 @@ enum Value {
     I32(i32),
     I64(i64),
     F(f64),
-    LD(f64),
+    LD(f64), // There is no f128 yet
     B64(Byte64),
     B128(Byte128),
 }
