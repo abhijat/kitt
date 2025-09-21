@@ -133,6 +133,22 @@ pub enum RegisterId {
     DR7,
 }
 
+impl RegisterId {
+    pub fn debug_register(index: u8) -> RegisterId {
+        match index {
+            0 => RegisterId::DR0,
+            1 => RegisterId::DR1,
+            2 => RegisterId::DR2,
+            3 => RegisterId::DR3,
+            4 => RegisterId::DR4,
+            5 => RegisterId::DR5,
+            6 => RegisterId::DR6,
+            7 => RegisterId::DR7,
+            _ => panic!("invalid index {index}"),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum RegisterKind {
     GeneralPurpose,

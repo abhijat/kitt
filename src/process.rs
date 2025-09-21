@@ -1,4 +1,8 @@
+use crate::reginfo::{lookup_register_info_by_id, RegisterId};
 use anyhow::{bail, Result};
+use nix::libc::{c_long, user, user_fpregs_struct, user_regs_struct};
+use nix::sys::ptrace::regset::NT_PRFPREG;
+use nix::sys::ptrace::AddressType;
 use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
 use nix::sys::{ptrace, signal, wait};
@@ -179,7 +183,43 @@ impl Process {
         let wait_result = wait::waitpid(self.pid, None)?;
         let stop_reason = StopReason::new(wait_result);
         self.state = stop_reason.process_state;
+
+        if self.is_attached == IsAttached::YES && self.state == ProcessState::Stopped {
+            self.read_registers()?;
+        }
+
         Ok(stop_reason)
+    }
+
+    pub fn read_registers(&self) -> Result<user_regs_struct> {
+        let regs = ptrace::getregs(self.pid)?;
+        Ok(regs)
+    }
+
+    pub fn read_fp_registers(&self) -> Result<user_fpregs_struct> {
+        let regs = ptrace::getregset::<NT_PRFPREG>(self.pid)?;
+        Ok(regs)
+    }
+
+    pub fn read_debug_register(&self, index: u8) -> Result<u64> {
+        let register_id = RegisterId::debug_register(index);
+        let info = lookup_register_info_by_id(register_id)?;
+        let word = ptrace::read_user(self.pid, info.offset as i32 as AddressType)?;
+        Ok(word as u64)
+    }
+
+    pub fn read_all_registers(&self, u: &mut user) -> Result<()> {
+        u.regs = self.read_registers()?;
+        u.i387 = self.read_fp_registers()?;
+        for i in 0..u.u_debugreg.len() {
+            u.u_debugreg[i] = self.read_debug_register(i as u8)?;
+        }
+        Ok(())
+    }
+
+    pub fn write_user_area(&self, offset: usize, payload: u64) -> Result<()> {
+        ptrace::write_user(self.pid, offset as isize as AddressType, payload as c_long)?;
+        Ok(())
     }
 }
 
