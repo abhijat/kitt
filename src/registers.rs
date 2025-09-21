@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 use nix::libc::user;
 use std::slice;
 
-struct Register<'a> {
+struct Registers<'a> {
     data: user,
     process: &'a Process,
 }
@@ -25,47 +25,36 @@ enum Value {
     B128(Byte128),
 }
 
-fn value_from<T>(slice: &[u8]) -> T
+fn read_value<T>(data: &[u8]) -> T
 where
     T: Copy,
 {
-    let size = size_of::<T>();
-    let slice = &slice[..size];
-    let p = slice.as_ptr();
-    let p = p as *const T;
-    unsafe { *p }
+    unsafe { *(data.as_ptr() as *const T) }
 }
 
-impl<'a> Register<'a> {
-    fn user_as_slice(&self, offset: usize) -> &[u8] {
+impl<'a> Registers<'a> {
+    fn read_value<T>(&self, offset: usize) -> T
+    where
+        T: Copy,
+    {
         let p = &self.data as *const user;
         let p = p as *const u8;
-        unsafe {
-            let p = p.add(offset);
-            slice::from_raw_parts(p, size_of::<user>())
-        }
+        unsafe { read_value(slice::from_raw_parts(p.add(offset), size_of::<T>())) }
     }
 
     fn read(&self, info: &RegisterInfo) -> Result<Value> {
-        let slice = self.user_as_slice(info.offset);
         let v = match info.format {
             RegisterFormat::Uint => match info.size {
-                1 => Value::U8(value_from(slice)),
-                2 => Value::U16(value_from(slice)),
-                4 => Value::U32(value_from(slice)),
-                8 => Value::U64(value_from(slice)),
+                1 => Value::U8(self.read_value(info.offset)),
+                2 => Value::U16(self.read_value(info.offset)),
+                4 => Value::U32(self.read_value(info.offset)),
+                8 => Value::U64(self.read_value(info.offset)),
                 size => bail!("unexpected size of register: {size}"),
             },
-            RegisterFormat::DoubleFloat => Value::F(value_from(slice)),
-            RegisterFormat::LongDouble => Value::LD(value_from(slice)),
-            RegisterFormat::Vector if info.size == 8 => {
-                let v = (&slice[..8]).try_into()?;
-                Value::B64(v)
-            }
-            RegisterFormat::Vector => {
-                let v = (&slice[..16]).try_into()?;
-                Value::B128(v)
-            }
+            RegisterFormat::DoubleFloat => Value::F(self.read_value(info.offset)),
+            RegisterFormat::LongDouble => Value::LD(self.read_value(info.offset)),
+            RegisterFormat::Vector if info.size == 8 => Value::B64(self.read_value(info.offset)),
+            RegisterFormat::Vector => Value::B128(self.read_value(info.offset)),
         };
         Ok(v)
     }
@@ -82,5 +71,36 @@ impl<'a> Register<'a> {
     fn write_by_id(&self, register_id: RegisterId, value: Value) -> Result<()> {
         let reg_info = lookup_register_info_by_id(register_id)?;
         self.write(reg_info, value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn to_slice<T>(t: &T) -> &[u8] {
+        unsafe { slice::from_raw_parts(t as *const T as *const u8, size_of::<T>()) }
+    }
+
+    #[test]
+    fn read_single_values() {
+        {
+            let source: u64 = 421;
+            let v: u64 = read_value(to_slice(&source));
+            assert_eq!(v, 421);
+        }
+
+        {
+            let source: i32 = -291;
+            let v: i32 = read_value(to_slice(&source));
+            assert_eq!(v, -291);
+        }
+    }
+
+    #[test]
+    fn read_array_value() {
+        let input = [0, 1, 2, 3, 4];
+        let output: [i32; 5] = read_value(to_slice(&input));
+        assert_eq!(input, output);
     }
 }
