@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"
+bytemuck = "1.23.2"
 nix = { version = "0.30.1", features = ["process", "ptrace", "signal"] }
 rustyline = { version = "17.0.1", features = ["with-file-history"] }
 

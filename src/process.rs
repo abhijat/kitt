@@ -1,7 +1,8 @@
 use crate::reginfo::{lookup_register_info_by_id, RegisterId};
+use crate::registers::Registers;
 use anyhow::{bail, Result};
-use nix::libc::{c_long, user, user_fpregs_struct, user_regs_struct};
-use nix::sys::ptrace::regset::NT_PRFPREG;
+use nix::libc::{c_long, user_fpregs_struct, user_regs_struct};
+use nix::sys::ptrace::regset;
 use nix::sys::ptrace::AddressType;
 use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
@@ -105,6 +106,7 @@ pub struct Process {
     state: ProcessState,
     terminate_on_end: TerminateOnEnd,
     is_attached: IsAttached,
+    registers: Registers,
 }
 
 fn read_from_pipe(mut r: PipeReader) -> Result<String> {
@@ -120,6 +122,7 @@ impl Process {
             state: ProcessState::Stopped,
             terminate_on_end,
             is_attached,
+            registers: Default::default(),
         }
     }
 
@@ -185,40 +188,52 @@ impl Process {
         self.state = stop_reason.process_state;
 
         if self.is_attached == IsAttached::YES && self.state == ProcessState::Stopped {
-            self.read_registers()?;
+            self.read_all_registers()?;
         }
 
         Ok(stop_reason)
     }
 
-    pub fn read_registers(&self) -> Result<user_regs_struct> {
-        let regs = ptrace::getregs(self.pid)?;
-        Ok(regs)
+    pub fn read_registers(&mut self) -> Result<user_regs_struct> {
+        Ok(ptrace::getregs(self.pid)?)
     }
 
-    pub fn read_fp_registers(&self) -> Result<user_fpregs_struct> {
-        let regs = ptrace::getregset::<NT_PRFPREG>(self.pid)?;
-        Ok(regs)
+    pub fn read_fp_registers(&mut self) -> Result<user_fpregs_struct> {
+        Ok(ptrace::getregset::<regset::NT_PRFPREG>(self.pid)?)
     }
 
-    pub fn read_debug_register(&self, index: u8) -> Result<u64> {
+    pub fn read_debug_register(&mut self, index: u8) -> Result<u64> {
         let register_id = RegisterId::debug_register(index);
         let info = lookup_register_info_by_id(register_id)?;
         let word = ptrace::read_user(self.pid, info.offset as i32 as AddressType)?;
         Ok(word as u64)
     }
 
-    pub fn read_all_registers(&self, u: &mut user) -> Result<()> {
+    pub fn read_all_registers(&mut self) -> Result<()> {
+        let mut u = self.registers.user_data();
+
         u.regs = self.read_registers()?;
         u.i387 = self.read_fp_registers()?;
         for i in 0..u.u_debugreg.len() {
             u.u_debugreg[i] = self.read_debug_register(i as u8)?;
         }
+        self.registers.set_user_data(u);
+
         Ok(())
     }
 
-    pub fn write_user_area(&self, offset: usize, payload: u64) -> Result<()> {
-        ptrace::write_user(self.pid, offset as isize as AddressType, payload as c_long)?;
+    pub fn write_user_area(&self, offset: usize, pointer: u64) -> Result<()> {
+        ptrace::write_user(self.pid, offset as isize as AddressType, pointer as c_long)?;
+        Ok(())
+    }
+
+    pub fn write_fprs(&self, f: user_fpregs_struct) -> Result<()> {
+        ptrace::setregset::<regset::NT_PRFPREG>(self.pid, f)?;
+        Ok(())
+    }
+
+    pub fn write_gprs(&self, f: user_regs_struct) -> Result<()> {
+        ptrace::setregset::<regset::NT_PRSTATUS>(self.pid, f)?;
         Ok(())
     }
 }

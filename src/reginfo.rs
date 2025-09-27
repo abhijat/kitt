@@ -149,7 +149,7 @@ impl RegisterId {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RegisterKind {
     GeneralPurpose,
     SubGeneralPurpose,
@@ -157,7 +157,7 @@ pub enum RegisterKind {
     Debug,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RegisterFormat {
     Uint,
     DoubleFloat,
