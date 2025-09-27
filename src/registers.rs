@@ -80,10 +80,15 @@ impl Registers {
         process: &Process,
     ) -> Result<()> {
         let user_bytes = bytes_of_mut(&mut self.data);
+
         let widened = value.widen();
         let value_bytes = bytes_of(&widened);
+
         let start = register_info.offset;
-        let end = start + value_bytes.len();
+        // Do not write the full span of value_bytes, but only the actual bytes which represent the
+        // value. The widened span is always 16 bytes long.
+        let end = start + register_info.size;
+
         let user_bytes_section = &mut user_bytes[start..end];
         user_bytes_section.copy_from_slice(value_bytes);
 
@@ -94,7 +99,9 @@ impl Registers {
             // make sure the address is aligned to 8 bytes
             let aligned_address = register_info.offset & !0b111;
 
-            // read 8 bytes starting from aligned address into word
+            // read 8 bytes starting from aligned address into word. note there are values which can
+            // be well over 8 bytes, but all of those are floating point registers, which are
+            // written en-masse in the other branch
             let word = *from_bytes(&user_bytes[aligned_address..]);
 
             // write into process user data. the assumption is that the value size is <= 8 bytes

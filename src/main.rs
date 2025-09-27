@@ -9,7 +9,6 @@ use std::env;
 mod process;
 mod reginfo;
 mod registers;
-mod types;
 
 mod reg_macros;
 
