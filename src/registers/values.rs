@@ -19,41 +19,6 @@ pub(crate) enum Value {
 }
 
 impl Value {
-    pub fn to_bytes(&self) -> &[u8] {
-        match self {
-            Value::U8(v) => bytes_of(v),
-            Value::U16(v) => bytes_of(v),
-            Value::U32(v) => bytes_of(v),
-            Value::U64(v) => bytes_of(v),
-            Value::I8(v) => bytes_of(v),
-            Value::I16(v) => bytes_of(v),
-            Value::I32(v) => bytes_of(v),
-            Value::I64(v) => bytes_of(v),
-            Value::F(v) => bytes_of(v),
-            Value::LD(v) => bytes_of(v),
-            Value::B64(v) => bytes_of(v),
-            Value::B128(v) => bytes_of(v),
-        }
-    }
-
-    pub fn is_float(&self) -> bool {
-        match self {
-            Value::F(_) => true,
-            Value::LD(_) => true,
-            _ => false,
-        }
-    }
-
-    pub fn is_signed(&self) -> bool {
-        match self {
-            Value::I8(_) => true,
-            Value::I16(_) => true,
-            Value::I32(_) => true,
-            Value::I64(_) => true,
-            _ => false,
-        }
-    }
-
     pub fn widen(&self) -> Byte128 {
         match self {
             Value::I8(v) => *from_bytes(bytes_of(v)),
